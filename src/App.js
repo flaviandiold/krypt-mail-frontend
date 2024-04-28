@@ -1,46 +1,55 @@
 import "./App.css";
 import axios, { HttpStatusCode } from "axios";
 import React, { useState, useEffect } from "react";
-const NodeRSA = require("node-rsa");
+const openpgp = require("openpgp");
 
 function App() {
   const [mailContent, setMailContent] = useState({});
+  const [mailData, setMailData] = useState(null);
   // const [decrypted, setDecrypted] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPasswordBox, setShowPasswordBox] = useState(false);
   // const [forwardable, setForwardable] = useState(true);
+  const [loop, setloop] = useState(true);
 
   const getMailStorageDetails = async () => {
     const messageId = getMessageIdFromQuery();
-    const mailContent = (
-      await axios.get(`http://0.0.0.0:3000/mail/${messageId}`)
-    ).data;
-    console.log(mailContent, "from mailserver");
-    if (mailContent.forwardable) {
-      decryptAndShow(mailContent);
-    } else {
-      // Create a <style> element
-      const style = document.createElement("style");
-      style.type = "text/css";
+    if (messageId) {
+      const mailContent = (
+        await axios.get(`http://0.0.0.0:3000/mail/${messageId}`)
+      ).data;
+      console.log(mailContent, "from mailserver");
+      if (mailContent.forwardable) {
+        setMailData(mailContent);
+        decryptAndShow(mailContent);
+      } else {
+        // Create a <style> element
+        const style = document.createElement("style");
+        style.type = "text/css";
 
-      // Define the CSS rules for @media print
-      const css = `
-        @media print {
-          html, body {
-            display: none;
+        // Define the CSS rules for @media print
+        const css = `
+          @media print {
+            html, body {
+              display: none;
+            }
           }
-        }
+  
+          html {
+            user-select: none;
+          }
+  
+        `;
 
-        html {
-          user-select: none;
-        }
+        // Set the text content of the <style> element to the CSS rules
+        style.textContent = css;
 
-      `;
-
-      // Set the text content of the <style> element to the CSS rules
-      style.textContent = css;
-
-      // Append the <style> element to the <head> of the document
-      document.head.appendChild(style);
-      await requestAccess(messageId);
+        // Append the <style> element to the <head> of the document
+        document.head.appendChild(style);
+        await requestAccess(messageId);
+      }
+    } else {
+      setMailContent("Hello user");
     }
 
     // setMailContent(mailContent);
@@ -52,17 +61,20 @@ function App() {
     document.getElementById("mail").addEventListener("click", () => {
       sendMail(token);
     });
-    let loop = true;
     while (loop) {
       try {
         const mailData = await getMailData(token);
+        console.log(mailData);
         if (mailData.verified) {
-          loop = false;
           if (mailData.depth === 0)
             setMailContent(mailData.content.replace(/<[^>]*>/g, ""));
-          else decryptAndShow(mailData);
+          else {
+            setMailData(mailData);
+            decryptAndShow(mailData);
+          }
+          setloop(false);
+          break;
         }
-        console.log(mailData);
       } catch (error) {
         if (error.response.status === HttpStatusCode.Forbidden) {
           console.log("enterss heree");
@@ -72,7 +84,7 @@ function App() {
         }
         throw error;
       }
-      await sleep(3000);
+      await sleep(2000);
     }
   };
 
@@ -85,16 +97,41 @@ function App() {
 
   const decryptAndShow = async (mailContent) => {
     console.log("comes inside with", mailContent);
-    const publicKeyOfFrom = (
-      await axios.get(`http://0.0.0.0:3000/user/public-key/${mailContent.from}`)
-    ).data.publicKey;
-    const decryptKey = new NodeRSA(publicKeyOfFrom, "public");
-    console.log(mailContent);
-    setMailContent(
-      decryptKey
-        .decryptPublic(mailContent.content.replace(/<[^>]*>/g, ""), "utf8")
-        .replace(/<[^>]*>/g, "")
-    );
+    if (password.length) {
+      const publicKeyOfFrom = (
+        await axios.get(
+          `http://0.0.0.0:3000/user/public-key/${mailContent.from}`
+        )
+      ).data.publicKey;
+      console.log(publicKeyOfFrom);
+      mailContent = mailContent.content.replace(/<[^>]*>/g, "");
+
+      const { data: decrypted, signatures } = await openpgp.decrypt({
+        message: await openpgp.readMessage({
+          armoredMessage: mailContent, // parse armored message
+        }),
+        verificationKeys: await openpgp.readKey({
+          armoredKey: publicKeyOfFrom,
+        }),
+        // decryptionKeys: await openpgp.readKey({ armoredKey: publicKeyArmored2 }),
+        passwords: password,
+      });
+      console.log(decrypted);
+      let verified = false;
+      try {
+        await signatures[0].verified;
+        verified = true;
+      } catch (error) {}
+      setMailContent(
+        decrypted.replace(/<[^>]*>/g, "\n") +
+          (verified ? "\nSignature is verified" : "\nUnverified signature")
+      );
+      setloop(false);
+
+      setShowPasswordBox(false);
+    } else {
+      setShowPasswordBox(true);
+    }
   };
 
   const getToken = async (queryParams) => {
@@ -135,7 +172,8 @@ function App() {
   };
 
   useEffect(() => {
-    if (typeof mailContent !== "string") getMailStorageDetails();
+    if (password.length) decryptAndShow(mailData);
+    else if (typeof mailContent !== "string") getMailStorageDetails();
   });
 
   return (
@@ -150,6 +188,26 @@ function App() {
           </p>
           <span id="mail"></span>
         </>
+      )}
+      {showPasswordBox && (
+        <div className="">
+          <input
+            id="passwordE2E"
+            type="text"
+            placeholder="Enter password"
+            className=" bg-BannerCardBackground  w-full outline-none "
+          />
+          <button
+            className="p-2 bg-BannerCardButtonBackground items-center text-BannerCardButtonText self-end flex font-bold px-2 rounded-md shadow-lg m-2 z-50 "
+            onClick={() => {
+              setPassword(document.getElementById("passwordE2E").value);
+              setShowPasswordBox(false);
+              // handler();
+            }}
+          >
+            Submit
+          </button>
+        </div>
       )}
     </div>
   );
